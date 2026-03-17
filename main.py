@@ -55,37 +55,66 @@ B_MIN, B_MAX = 200, 255
 # Windows: first-run self-install
 # ──────────────────────────────────────────────
 
+def _windows_install_dir():
+    """Return the fixed install directory: %LOCALAPPDATA%\NotionAutoMeet"""
+    return os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NotionAutoMeet")
+
+
 def _windows_first_run():
-    """On first run, register for autostart and notify the user."""
+    """On first run, copy exe to install dir, register for autostart, and notify."""
     import winreg
+    import shutil
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     value_name = "NotionAutoMeet"
 
-    # Get path to the running executable (works for both .py and PyInstaller .exe)
-    if getattr(sys, 'frozen', False):
-        exe_path = sys.executable  # PyInstaller .exe
-    else:
-        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+    install_dir = _windows_install_dir()
+    os.makedirs(install_dir, exist_ok=True)
+    installed_exe = os.path.join(install_dir, "NotionAutoMeet.exe")
 
+    # Get current exe path
+    if getattr(sys, 'frozen', False):
+        current_exe = sys.executable
+    else:
+        # Running as script — register python + script for autostart
+        current_exe = None
+
+    # If running as a frozen exe, copy to install dir (self-install / update)
+    if current_exe and os.path.normcase(os.path.abspath(current_exe)) != os.path.normcase(os.path.abspath(installed_exe)):
+        try:
+            shutil.copy2(current_exe, installed_exe)
+            log.info(f"Installed/updated to: {installed_exe}")
+        except PermissionError:
+            # The installed copy is likely running; this is fine on update
+            log.info("Could not overwrite installed exe (may be in use), skipping copy")
+        except OSError as e:
+            log.warning(f"Could not copy to install dir: {e}")
+
+    # Determine what to register for autostart
+    if current_exe:
+        autostart_path = f'"{installed_exe}"'
+    else:
+        autostart_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+    # Check if already registered with correct path
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
             existing, _ = winreg.QueryValueEx(key, value_name)
-            if existing == f'"{exe_path}"' or existing == exe_path:
-                return  # already registered
+            if existing == autostart_path:
+                return  # already registered correctly
     except FileNotFoundError:
         pass
     except OSError:
         pass
 
-    # Register for autostart
+    # Register for autostart (always points to installed_exe)
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, f'"{exe_path}"')
-        log.info(f"Registered for autostart: {exe_path}")
+            winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, autostart_path)
+        log.info(f"Registered for autostart: {autostart_path}")
     except OSError as e:
         log.warning(f"Could not register autostart: {e}")
 
-    # Show a Windows toast notification on first run
+    # Show a Windows notification on first run
     try:
         from tkinter import Tk, messagebox
         root = Tk()
@@ -96,6 +125,7 @@ def _windows_first_run():
             "It will automatically start when you log in.\n"
             "It watches for Notion's meeting popup and clicks\n"
             "\"Start Transcribing\" for you.\n\n"
+            f"Installed to: {install_dir}\n"
             f"Logs: {_log_file}"
         )
         root.destroy()
@@ -267,17 +297,28 @@ def _cluster_check(mask, scale_x, scale_y, disp):
 
 
 def _windows_uninstall():
-    """Remove autostart registry entry."""
+    """Remove autostart registry entry and installed files."""
     import winreg
+    import shutil
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
             winreg.DeleteValue(key, "NotionAutoMeet")
-        print("Notion Auto-Meet removed from startup.")
+        print("Removed from startup.")
     except FileNotFoundError:
-        print("Notion Auto-Meet was not registered for startup.")
+        print("Was not registered for startup.")
     except OSError as e:
-        print(f"Error: {e}")
+        print(f"Registry error: {e}")
+
+    # Clean up install directory
+    install_dir = _windows_install_dir()
+    if os.path.exists(install_dir):
+        try:
+            shutil.rmtree(install_dir)
+            print(f"Removed install directory: {install_dir}")
+        except OSError as e:
+            print(f"Could not fully remove {install_dir}: {e}")
+    print("Notion Auto-Meet uninstalled.")
 
 
 def main():
