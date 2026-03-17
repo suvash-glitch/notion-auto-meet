@@ -334,8 +334,13 @@ def main():
                 arr, sx, sy = result
                 pos = find_button_in_arr(arr, sx, sy, disp)
                 if pos:
-                    pyautogui.click(pos[0], pos[1])
-                    log.info(f"CLICKED 'Start transcribing' at ({pos[0]},{pos[1]}) on display {disp['id']}")
+                    x, y = pos[0], pos[1]
+                    pyautogui.moveTo(x, y)
+                    time.sleep(0.15)
+                    pyautogui.mouseDown(x, y)
+                    time.sleep(0.05)
+                    pyautogui.mouseUp(x, y)
+                    log.info(f"CLICKED 'Start transcribing' at ({x},{y}) on display {disp['id']}")
                     last_click = time.time()
                     break
 
