@@ -92,14 +92,27 @@ def _windows_first_run():
         # Running as script — register python + script for autostart
         current_exe = None
 
-    # If running as a frozen exe, copy to install dir (self-install / update)
+    # If running as a frozen exe, copy entire app directory to install dir (self-install / update)
     if current_exe and os.path.normcase(os.path.abspath(current_exe)) != os.path.normcase(os.path.abspath(installed_exe)):
+        # For --onedir builds, copy the whole directory containing the exe
+        current_dir = os.path.dirname(os.path.abspath(current_exe))
         try:
-            shutil.copy2(current_exe, installed_exe)
-            log.info(f"Installed/updated to: {installed_exe}")
-        except PermissionError:
-            # The installed copy is likely running; this is fine on update
-            log.info("Could not overwrite installed exe (may be in use), skipping copy")
+            # Copy all files from the app directory to install dir
+            for item in os.listdir(current_dir):
+                src = os.path.join(current_dir, item)
+                dst = os.path.join(install_dir, item)
+                try:
+                    if os.path.isdir(src):
+                        if os.path.exists(dst):
+                            shutil.rmtree(dst)
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+                except PermissionError:
+                    log.info(f"Could not overwrite {item} (may be in use), skipping")
+                except OSError as e:
+                    log.warning(f"Could not copy {item}: {e}")
+            log.info(f"Installed/updated to: {install_dir}")
         except OSError as e:
             log.warning(f"Could not copy to install dir: {e}")
 

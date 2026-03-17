@@ -25,14 +25,18 @@ jobs:
       - name: Generate icon
         run: python installer/create_icon.py
 
+      - name: Generate version info
+        run: python installer/version_info.py
+
       - name: Build executable
         run: |
           pyinstaller `
             --noconfirm `
-            --onefile `
+            --onedir `
             --noconsole `
             --name "NotionAutoMeet" `
             --icon "installer/icon.ico" `
+            --version-file "installer/version_info.txt" `
             --hidden-import mss.windows `
             --hidden-import ctypes.wintypes `
             --exclude-module Quartz `
@@ -40,11 +44,14 @@ jobs:
             --exclude-module Foundation `
             main.py
 
+      - name: Create zip
+        run: Compress-Archive -Path dist/NotionAutoMeet/* -DestinationPath dist/NotionAutoMeet-Windows.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: NotionAutoMeet-Windows
-          path: dist/NotionAutoMeet.exe
+          path: dist/NotionAutoMeet-Windows.zip
 
   release:
     needs: build
@@ -74,11 +81,11 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}.
 
-            **Download `NotionAutoMeet.exe` below, double-click to run. No install needed.**
+            **Download `NotionAutoMeet-Windows.zip`, extract, and run `NotionAutoMeet.exe`.**
 
             - Auto-starts on login after first run
             - Runs silently in the background
             - Uninstall: `NotionAutoMeet.exe --uninstall`
-          files: NotionAutoMeet.exe
+          files: NotionAutoMeet-Windows.zip
           draft: false
           prerelease: false
