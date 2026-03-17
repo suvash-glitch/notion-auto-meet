@@ -1,0 +1,8 @@
+numpy
+pyautogui
+
+# macOS: uses built-in Quartz (pyobjc-framework-Quartz), usually pre-installed
+# pip install pyobjc-framework-Quartz  # if not already available
+
+# Windows: uses mss for fast screen capture
+mss; sys_platform == 'win32'

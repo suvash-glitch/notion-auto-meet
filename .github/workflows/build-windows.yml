@@ -1,0 +1,84 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyinstaller numpy pyautogui mss Pillow
+
+      - name: Generate icon
+        run: python installer/create_icon.py
+
+      - name: Build executable
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --onefile `
+            --noconsole `
+            --name "NotionAutoMeet" `
+            --icon "installer/icon.ico" `
+            --hidden-import mss.windows `
+            --hidden-import ctypes.wintypes `
+            --exclude-module Quartz `
+            --exclude-module AppKit `
+            --exclude-module Foundation `
+            main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotionAutoMeet-Windows
+          path: dist/NotionAutoMeet.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: NotionAutoMeet-Windows
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.sha.outputs.short }}
+          name: Notion Auto-Meet (build ${{ steps.sha.outputs.short }})
+          body: |
+            Automated build from commit ${{ github.sha }}.
+
+            **Download `NotionAutoMeet.exe` below, double-click to run. No install needed.**
+
+            - Auto-starts on login after first run
+            - Runs silently in the background
+            - Uninstall: `NotionAutoMeet.exe --uninstall`
+          files: NotionAutoMeet.exe
+          draft: false
+          prerelease: false

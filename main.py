@@ -1,0 +1,344 @@
+"""
+Notion Auto-Meet: Instantly clicks "Start Transcribing" when
+Notion shows its meeting popup. Scans all monitors.
+
+Cross-platform: macOS (Quartz) and Windows (mss + win32api).
+
+Optimized for speed:
+- Only captures a thin strip (top 150px) of each display
+- Raw numpy buffer — no PIL conversion
+- Polls every 100ms
+
+On Windows, first run auto-registers for startup. No installer needed.
+"""
+
+import sys
+import os
+import platform
+import time
+import logging
+import numpy as np
+import pyautogui
+
+SYSTEM = platform.system()
+
+# Log to a writable location (next to exe, or AppData on Windows)
+if SYSTEM == "Windows":
+    _log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NotionAutoMeet")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = os.path.join(_log_dir, "notion-auto-meet.log")
+else:
+    _log_file = "notion-auto-meet.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_log_file),
+    ],
+)
+log = logging.getLogger("notion-auto-meet")
+
+# --- Configuration ---
+POLL_INTERVAL = 0.1  # 100ms — near-instant detection
+SCAN_HEIGHT = 150    # Only capture top 150px of each display
+CLICK_COOLDOWN = 30  # Seconds after a click before scanning again
+MIN_MATCHING_PIXELS = 20
+
+# Blue color of the "Start transcribing" button
+R_MIN, R_MAX = 50, 130
+G_MIN, G_MAX = 140, 200
+B_MIN, B_MAX = 200, 255
+
+# ──────────────────────────────────────────────
+# Windows: first-run self-install
+# ──────────────────────────────────────────────
+
+def _windows_first_run():
+    """On first run, register for autostart and notify the user."""
+    import winreg
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    value_name = "NotionAutoMeet"
+
+    # Get path to the running executable (works for both .py and PyInstaller .exe)
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable  # PyInstaller .exe
+    else:
+        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
+            existing, _ = winreg.QueryValueEx(key, value_name)
+            if existing == f'"{exe_path}"' or existing == exe_path:
+                return  # already registered
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+    # Register for autostart
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, f'"{exe_path}"')
+        log.info(f"Registered for autostart: {exe_path}")
+    except OSError as e:
+        log.warning(f"Could not register autostart: {e}")
+
+    # Show a Windows toast notification on first run
+    try:
+        from tkinter import Tk, messagebox
+        root = Tk()
+        root.withdraw()
+        messagebox.showinfo(
+            "Notion Auto-Meet",
+            "Notion Auto-Meet is now running in the background.\n\n"
+            "It will automatically start when you log in.\n"
+            "It watches for Notion's meeting popup and clicks\n"
+            "\"Start Transcribing\" for you.\n\n"
+            f"Logs: {_log_file}"
+        )
+        root.destroy()
+    except Exception:
+        pass  # non-critical
+
+
+# ──────────────────────────────────────────────
+# Platform-specific: screen capture & process check
+# ──────────────────────────────────────────────
+
+if SYSTEM == "Darwin":
+    from Quartz import (
+        CGWindowListCreateImage, CGRectMake,
+        kCGWindowListOptionOnScreenOnly, kCGNullWindowID,
+        kCGWindowImageDefault,
+        CGImageGetWidth, CGImageGetHeight,
+        CGImageGetBytesPerRow, CGImageGetDataProvider,
+        CGDataProviderCopyData,
+        CGGetActiveDisplayList, CGDisplayBounds,
+    )
+    import subprocess
+
+    def get_displays():
+        err, display_ids, count = CGGetActiveDisplayList(10, None, None)
+        displays = []
+        for d in display_ids:
+            bounds = CGDisplayBounds(d)
+            displays.append({
+                "id": d,
+                "x": int(bounds.origin.x),
+                "y": int(bounds.origin.y),
+                "w": int(bounds.size.width),
+                "h": int(bounds.size.height),
+            })
+        return displays
+
+    def capture_strip(disp):
+        """Capture top SCAN_HEIGHT px of a display. Returns (BGRA array, scale_x, scale_y) or None."""
+        rect = CGRectMake(disp["x"], disp["y"], disp["w"], SCAN_HEIGHT)
+        cg_image = CGWindowListCreateImage(
+            rect, kCGWindowListOptionOnScreenOnly,
+            kCGNullWindowID, kCGWindowImageDefault,
+        )
+        if not cg_image:
+            return None
+
+        w = CGImageGetWidth(cg_image)
+        h = CGImageGetHeight(cg_image)
+        bpr = CGImageGetBytesPerRow(cg_image)
+        raw = CGDataProviderCopyData(CGImageGetDataProvider(cg_image))
+
+        buf = np.frombuffer(raw, dtype=np.uint8).reshape(h, bpr)
+        arr = buf[:, :w * 4].reshape(h, w, 4)  # BGRA
+        return arr, w / disp["w"], h / SCAN_HEIGHT
+
+    def find_button_in_arr(arr, scale_x, scale_y, disp):
+        """Scan BGRA array for the blue button. Returns screen (x,y) or None."""
+        b, g, r = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        mask = (
+            (r >= R_MIN) & (r <= R_MAX) &
+            (g >= G_MIN) & (g <= G_MAX) &
+            (b >= B_MIN) & (b <= B_MAX)
+        )
+        return _cluster_check(mask, scale_x, scale_y, disp)
+
+    def is_notion_running():
+        try:
+            return subprocess.run(
+                ["pgrep", "-x", "Notion"], capture_output=True, timeout=2
+            ).returncode == 0
+        except Exception:
+            return False
+
+
+elif SYSTEM == "Windows":
+    import ctypes
+    import ctypes.wintypes
+    import mss
+
+    _sct = mss.mss()
+
+    def get_displays():
+        displays = []
+        for i, mon in enumerate(_sct.monitors[1:], start=1):  # skip the "all" monitor
+            displays.append({
+                "id": i,
+                "x": mon["left"],
+                "y": mon["top"],
+                "w": mon["width"],
+                "h": mon["height"],
+            })
+        return displays
+
+    def capture_strip(disp):
+        """Capture top SCAN_HEIGHT px of a display. Returns (BGRA array, scale_x, scale_y) or None."""
+        region = {
+            "left": disp["x"],
+            "top": disp["y"],
+            "width": disp["w"],
+            "height": SCAN_HEIGHT,
+        }
+        try:
+            shot = _sct.grab(region)
+            # mss returns BGRA
+            arr = np.frombuffer(shot.raw, dtype=np.uint8).reshape(shot.height, shot.width, 4)
+            return arr, 1.0, 1.0  # mss returns at screen resolution (no retina on Windows)
+        except Exception:
+            return None
+
+    def find_button_in_arr(arr, scale_x, scale_y, disp):
+        """Scan BGRA array for the blue button. Returns screen (x,y) or None."""
+        b, g, r = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+        mask = (
+            (r >= R_MIN) & (r <= R_MAX) &
+            (g >= G_MIN) & (g <= G_MAX) &
+            (b >= B_MIN) & (b <= B_MAX)
+        )
+        return _cluster_check(mask, scale_x, scale_y, disp)
+
+    def is_notion_running():
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Notion.exe", "/NH"],
+                capture_output=True, text=True, timeout=2,
+            )
+            return "Notion.exe" in result.stdout
+        except Exception:
+            return False
+
+else:
+    log.error(f"Unsupported platform: {SYSTEM}")
+    sys.exit(1)
+
+
+# ──────────────────────────────────────────────
+# Shared logic
+# ──────────────────────────────────────────────
+
+def _cluster_check(mask, scale_x, scale_y, disp):
+    """Given a boolean mask of matching pixels, check for a button-shaped cluster.
+    Returns absolute screen (x,y) or None."""
+    ys, xs = np.where(mask)
+    if len(xs) < MIN_MATCHING_PIXELS:
+        return None
+
+    avg_x, avg_y = int(np.mean(xs)), int(np.mean(ys))
+    cw, ch = int(100 * scale_x), int(25 * scale_y)
+
+    cmask = (np.abs(xs - avg_x) < cw) & (np.abs(ys - avg_y) < ch)
+    cxs, cys = xs[cmask], ys[cmask]
+
+    if len(cxs) >= MIN_MATCHING_PIXELS:
+        cx = int(np.mean(cxs))
+        cy = int(np.mean(cys))
+        return (disp["x"] + int(cx / scale_x), disp["y"] + int(cy / scale_y))
+
+    return None
+
+
+def _windows_uninstall():
+    """Remove autostart registry entry."""
+    import winreg
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, "NotionAutoMeet")
+        print("Notion Auto-Meet removed from startup.")
+    except FileNotFoundError:
+        print("Notion Auto-Meet was not registered for startup.")
+    except OSError as e:
+        print(f"Error: {e}")
+
+
+def main():
+    # Handle --uninstall flag
+    if "--uninstall" in sys.argv:
+        if SYSTEM == "Windows":
+            _windows_uninstall()
+        else:
+            print("Use: python setup_autostart.py --remove")
+        return
+
+    # Windows: auto-register on first run
+    if SYSTEM == "Windows":
+        _windows_first_run()
+
+    displays = get_displays()
+    log.info(f"Notion Auto-Meet started (FAST MODE) on {SYSTEM}")
+    log.info(f"{len(displays)} display(s):")
+    for d in displays:
+        log.info(f"  Display {d['id']}: {d['w']}x{d['h']} at ({d['x']},{d['y']})")
+    log.info(f"Poll: {int(POLL_INTERVAL*1000)}ms | Cooldown: {CLICK_COOLDOWN}s")
+    log.info("Watching...")
+
+    last_click = 0
+    notion_check_counter = 0
+    notion_running = True  # assume running at start
+
+    while True:
+        try:
+            now = time.time()
+
+            if now - last_click < CLICK_COOLDOWN:
+                time.sleep(POLL_INTERVAL)
+                continue
+
+            # Only check if Notion is running every ~2 seconds (20 loops)
+            notion_check_counter += 1
+            if notion_check_counter >= 20:
+                notion_check_counter = 0
+                notion_running = is_notion_running()
+                if not notion_running:
+                    time.sleep(1)
+                    continue
+
+            if not notion_running:
+                time.sleep(1)
+                continue
+
+            # Scan all displays
+            for disp in displays:
+                result = capture_strip(disp)
+                if result is None:
+                    continue
+                arr, sx, sy = result
+                pos = find_button_in_arr(arr, sx, sy, disp)
+                if pos:
+                    pyautogui.click(pos[0], pos[1])
+                    log.info(f"CLICKED 'Start transcribing' at ({pos[0]},{pos[1]}) on display {disp['id']}")
+                    last_click = time.time()
+                    break
+
+            time.sleep(POLL_INTERVAL)
+
+        except KeyboardInterrupt:
+            log.info("Shutting down.")
+            break
+        except Exception as e:
+            log.error(f"Error: {e}")
+            time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,30 @@
+# Build artifacts
+dist/
+build/
+*.spec
+__pycache__/
+*.pyc
+
+# PyInstaller
+*.manifest
+
+# Screenshots/debug images
+*.png
+
+# Logs
+*.log
+
+# Browser data
+.browser-data/
+
+# Inno Setup output
+installer/Output/
+installer/icon.ico
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
