@@ -56,7 +56,7 @@ B_MIN, B_MAX = 200, 255
 # ──────────────────────────────────────────────
 
 def _windows_install_dir():
-    """Return the fixed install directory: %LOCALAPPDATA%\NotionAutoMeet"""
+    r"""Return the fixed install directory: %LOCALAPPDATA%\NotionAutoMeet"""
     return os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NotionAutoMeet")
 
 
