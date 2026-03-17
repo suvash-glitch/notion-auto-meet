@@ -206,21 +206,69 @@ elif SYSTEM == "Windows":
     import ctypes.wintypes
     import mss
 
-    # Direct Win32 click via mouse_event — more reliable than pyautogui on Windows
+    # Win32 SendInput structures for reliable clicking
+    INPUT_MOUSE = 0
+    MOUSEEVENTF_MOVE = 0x0001
     MOUSEEVENTF_LEFTDOWN = 0x0002
     MOUSEEVENTF_LEFTUP = 0x0004
     MOUSEEVENTF_ABSOLUTE = 0x8000
-    MOUSEEVENTF_MOVE = 0x0001
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.wintypes.LONG),
+            ("dy", ctypes.wintypes.LONG),
+            ("mouseData", ctypes.wintypes.DWORD),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.wintypes.DWORD),
+            ("mi", MOUSEINPUT),
+        ]
 
     def _win_click(x, y):
-        """Click at screen coordinates using Win32 API directly."""
-        # SetCursorPos moves the cursor
-        ctypes.windll.user32.SetCursorPos(x, y)
+        """Click at screen coordinates using SendInput with absolute coords."""
+        # Convert screen coords to absolute (0-65535) coordinate space
+        # Use virtual screen metrics for multi-monitor support
+        sm_xvscreen = ctypes.windll.user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+        sm_yvscreen = ctypes.windll.user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+        sm_cxvscreen = ctypes.windll.user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+        sm_cyvscreen = ctypes.windll.user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+
+        abs_x = int(((x - sm_xvscreen) * 65535) / sm_cxvscreen)
+        abs_y = int(((y - sm_yvscreen) * 65535) / sm_cyvscreen)
+
+        # Move to position
+        move = INPUT()
+        move.type = INPUT_MOUSE
+        move.mi.dx = abs_x
+        move.mi.dy = abs_y
+        move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
+        ctypes.windll.user32.SendInput(1, ctypes.byref(move), ctypes.sizeof(INPUT))
         time.sleep(0.1)
-        # mouse_event sends the click at current cursor position
-        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+
+        # Mouse down
+        down = INPUT()
+        down.type = INPUT_MOUSE
+        down.mi.dx = abs_x
+        down.mi.dy = abs_y
+        down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE
+        ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
         time.sleep(0.05)
-        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+        # Mouse up
+        up = INPUT()
+        up.type = INPUT_MOUSE
+        up.mi.dx = abs_x
+        up.mi.dy = abs_y
+        up.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE
+        ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+
+        log.info(f"SendInput click at screen ({x},{y}) -> abs ({abs_x},{abs_y}), "
+                 f"vscreen: origin=({sm_xvscreen},{sm_yvscreen}) size=({sm_cxvscreen}x{sm_cyvscreen})")
 
     _sct = mss.mss()
 
