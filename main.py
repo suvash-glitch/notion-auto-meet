@@ -58,7 +58,7 @@ log = logging.getLogger("notion-auto-meet")
 POLL_INTERVAL = 0.1  # 100ms — near-instant detection
 SCAN_HEIGHT = 150    # Only capture top 150px of each display
 CLICK_COOLDOWN = 30  # Seconds after a click before scanning again
-MIN_MATCHING_PIXELS = 20
+MIN_MATCHING_PIXELS = 50
 
 # Blue color of the "Start transcribing" button
 R_MIN, R_MAX = 50, 130
@@ -256,10 +256,16 @@ elif SYSTEM == "Windows":
             ("mi", MOUSEINPUT),
         ]
 
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.wintypes.LONG), ("y", ctypes.wintypes.LONG)]
+
     def _win_click(x, y):
-        """Click at screen coordinates using SendInput with absolute coords."""
+        """Click at screen coordinates, then restore cursor to original position."""
+        # Save current cursor position
+        old_pos = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(old_pos))
+
         # Convert screen coords to absolute (0-65535) coordinate space
-        # Use virtual screen metrics for multi-monitor support
         sm_xvscreen = ctypes.windll.user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
         sm_yvscreen = ctypes.windll.user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
         sm_cxvscreen = ctypes.windll.user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
@@ -268,34 +274,30 @@ elif SYSTEM == "Windows":
         abs_x = int(((x - sm_xvscreen) * 65535) / sm_cxvscreen)
         abs_y = int(((y - sm_yvscreen) * 65535) / sm_cyvscreen)
 
-        # Move to position
-        move = INPUT()
-        move.type = INPUT_MOUSE
-        move.mi.dx = abs_x
-        move.mi.dy = abs_y
-        move.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE
-        ctypes.windll.user32.SendInput(1, ctypes.byref(move), ctypes.sizeof(INPUT))
-        time.sleep(0.1)
+        # Move, click, restore — as fast as possible
+        ctypes.windll.user32.SetCursorPos(x, y)
+        time.sleep(0.05)
 
-        # Mouse down
         down = INPUT()
         down.type = INPUT_MOUSE
         down.mi.dx = abs_x
         down.mi.dy = abs_y
         down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE
         ctypes.windll.user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
-        time.sleep(0.05)
+        time.sleep(0.03)
 
-        # Mouse up
         up = INPUT()
         up.type = INPUT_MOUSE
         up.mi.dx = abs_x
         up.mi.dy = abs_y
         up.mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE
         ctypes.windll.user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+        time.sleep(0.03)
 
-        log.info(f"SendInput click at screen ({x},{y}) -> abs ({abs_x},{abs_y}), "
-                 f"vscreen: origin=({sm_xvscreen},{sm_yvscreen}) size=({sm_cxvscreen}x{sm_cyvscreen})")
+        # Restore cursor to where user had it
+        ctypes.windll.user32.SetCursorPos(old_pos.x, old_pos.y)
+
+        log.info(f"Clicked ({x},{y}), cursor restored to ({old_pos.x},{old_pos.y})")
 
     _sct = mss.mss()
 
@@ -466,7 +468,18 @@ def main():
                 arr, sx, sy = result
                 pos = find_button_in_arr(arr, sx, sy, disp)
                 if pos:
-                    x, y = pos[0], pos[1]
+                    # Confirm: wait 500ms and scan again to rule out false positives
+                    time.sleep(0.5)
+                    result2 = capture_strip(disp)
+                    if result2 is None:
+                        continue
+                    arr2, sx2, sy2 = result2
+                    pos2 = find_button_in_arr(arr2, sx2, sy2, disp)
+                    if not pos2:
+                        log.info(f"False positive filtered at ({pos[0]},{pos[1]})")
+                        continue
+                    # Both scans found the button — click it
+                    x, y = pos2[0], pos2[1]
                     if SYSTEM == "Windows":
                         _win_click(x, y)
                     else:
