@@ -206,6 +206,22 @@ elif SYSTEM == "Windows":
     import ctypes.wintypes
     import mss
 
+    # Direct Win32 click via mouse_event — more reliable than pyautogui on Windows
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+    MOUSEEVENTF_ABSOLUTE = 0x8000
+    MOUSEEVENTF_MOVE = 0x0001
+
+    def _win_click(x, y):
+        """Click at screen coordinates using Win32 API directly."""
+        # SetCursorPos moves the cursor
+        ctypes.windll.user32.SetCursorPos(x, y)
+        time.sleep(0.1)
+        # mouse_event sends the click at current cursor position
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
     _sct = mss.mss()
 
     def get_displays():
@@ -376,11 +392,10 @@ def main():
                 pos = find_button_in_arr(arr, sx, sy, disp)
                 if pos:
                     x, y = pos[0], pos[1]
-                    pyautogui.moveTo(x, y)
-                    time.sleep(0.15)
-                    pyautogui.mouseDown(x, y)
-                    time.sleep(0.05)
-                    pyautogui.mouseUp(x, y)
+                    if SYSTEM == "Windows":
+                        _win_click(x, y)
+                    else:
+                        pyautogui.click(x, y)
                     log.info(f"CLICKED 'Start transcribing' at ({x},{y}) on display {disp['id']}")
                     last_click = time.time()
                     break
