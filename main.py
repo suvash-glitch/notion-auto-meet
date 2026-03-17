@@ -216,12 +216,21 @@ elif SYSTEM == "Windows":
         )
         return _cluster_check(mask, scale_x, scale_y, disp)
 
+    import subprocess
+
+    # Prevent subprocess from flashing a console window on Windows
+    _startupinfo = subprocess.STARTUPINFO()
+    _startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _startupinfo.wShowWindow = 0  # SW_HIDE
+    _creation_flags = subprocess.CREATE_NO_WINDOW
+
     def is_notion_running():
         try:
-            import subprocess
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq Notion.exe", "/NH"],
                 capture_output=True, text=True, timeout=2,
+                startupinfo=_startupinfo,
+                creationflags=_creation_flags,
             )
             return "Notion.exe" in result.stdout
         except Exception:
