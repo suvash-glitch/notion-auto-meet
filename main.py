@@ -22,6 +22,20 @@ import pyautogui
 
 SYSTEM = platform.system()
 
+# Windows: declare DPI awareness so coordinates are always in physical pixels
+# This must happen before any GUI/screen calls
+if SYSTEM == "Windows":
+    try:
+        ctypes = __import__("ctypes")
+        # Per-Monitor DPI aware (Windows 8.1+)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            # Fallback for older Windows
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
 # Log to a writable location (next to exe, or AppData on Windows)
 if SYSTEM == "Windows":
     _log_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "NotionAutoMeet")
